@@ -1,0 +1,107 @@
+import pool from "../configs/db.js";
+
+export const addUserAddressModel = async (data) => {
+  const sql = `INSERT INTO user_addresses SET ?`;
+
+  const [result] = await pool.query(sql, [data]);
+
+  return result;
+};
+
+export const removeDefaultAddress = async (userId) => {
+  const sql = `UPDATE user_addresses 
+       SET is_default = 0 
+       WHERE user_id = ? AND is_deleted = 0`;
+  await pool.query(sql, [userId]);
+};
+
+export const setDefaultAddressModel = async (userId, addressId) => {
+  const checkSql = `SELECT address_id
+       FROM user_addresses
+       WHERE address_id = ?
+       AND user_id = ?
+       AND is_deleted = 0
+       LIMIT 1`;
+  const [addressRows] = await pool.query(checkSql, [addressId, userId]);
+
+  if (addressRows.length === 0) {
+    return { notFound: true };
+  }
+
+  const sql = `UPDATE user_addresses
+       SET is_default = CASE WHEN address_id = ? THEN 1 ELSE 0 END,
+           updated_at = NOW(),
+           updated_by = ?
+       WHERE user_id = ?
+       AND is_deleted = 0`;
+
+  const [result] = await pool.query(sql, [addressId, userId, userId]);
+
+  return { ...result, notFound: false };
+};
+
+export const getDefaultAddressModel = async (userId) => {
+  const sql = `SELECT address_id, full_name, address_line1, city, state, postal_code, country 
+       FROM user_addresses 
+       WHERE user_id = ? AND is_default = 1 AND is_deleted = 0
+       ORDER BY updated_at DESC
+       LIMIT 1`;
+  const [result] = await pool.query(sql, [userId]);
+
+  return result;
+};
+
+export const getAllAddresses = async (userId) => {
+  const sql = `SELECT address_id,
+              full_name,
+              phone,
+              address_line1,
+              address_line2,
+              city,
+              state,
+              postal_code,
+              country,
+              is_default,
+              created_at,
+              updated_at
+       FROM user_addresses
+       WHERE user_id = ?
+       AND is_deleted = 0
+       ORDER BY is_default DESC, created_at DESC`;
+
+  const [result] = await pool.query(sql, [userId]);
+
+  return result;
+};
+
+export const getAddressByIdModel = async (addressId, userId) => {
+  const sql = `SELECT full_name,address_line1,city,state,postal_code,country FROM user_addresses WHERE address_id = ? AND user_id = ?`;
+  const [result] = await pool.query(sql, [addressId, userId]);
+
+  return result;
+};
+
+export const updateAddressModel = async (data, addressId, userId) => {
+  const sql = `UPDATE user_addresses
+       SET ?
+       WHERE address_id = ?
+       AND user_id = ?
+       AND is_deleted = 0`;
+
+  const [result] = await pool.query(sql, [data, addressId, userId]);
+
+  return result;
+};
+
+export const deleteAddressModel = async (addressId, userId) => {
+  const sql = `UPDATE user_addresses
+       SET is_deleted = 1,
+           updated_at = NOW()
+       WHERE address_id = ?
+       AND user_id = ?
+       AND is_deleted = 0`;
+
+  const [result] = await pool.query(sql, [addressId, userId]);
+
+  return result;
+};
