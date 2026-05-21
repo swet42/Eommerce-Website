@@ -410,13 +410,27 @@ export const getAllOfferUsageSummary = async () => {
 };
 
 export const createOfferUsage = async (offerData) => {
-  const { offer_id, user_id, order_id, discount_amount } = offerData;
+  const {
+    offer_id,
+    user_id,
+    order_id,
+    discount_amount,
+    created_by,
+    updated_by,
+  } = offerData;
 
   const [result] = await pool.query(
     `INSERT INTO offer_usage
-     (offer_id, user_id, order_id, discount_amount)
-     VALUES (?, ?, ?, ?)`,
-    [offer_id, user_id, order_id, discount_amount],
+     (offer_id, user_id, order_id, discount_amount, created_by, updated_by)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      offer_id,
+      user_id,
+      order_id,
+      discount_amount,
+      created_by || user_id,
+      updated_by || user_id,
+    ],
   );
 
   return result;
@@ -800,9 +814,12 @@ export const getCartWithOffer = async (cartId) => {
             om.start_date,
             om.end_date,
             om.start_time,
-            om.end_time
+            om.end_time,
+            opc.product_id,
+            opc.category_id
      FROM cart_master cm
      LEFT JOIN offer_master om ON om.offer_id = cm.offer_id
+     LEFT JOIN offer_product_category opc ON opc.offer_id = om.offer_id AND opc.is_active = 1 AND opc.is_deleted = 0
      WHERE cm.cart_id = ? AND cm.is_deleted = 0`,
     [cartId],
   );
@@ -817,6 +834,7 @@ export const getCartWithOffer = async (cartId) => {
 export const getCartItemsWithOffer = async (cartId) => {
   const [rows] = await pool.query(
     `SELECT ci.cart_item_id,
+            ci.cart_id,
             ci.product_id,
             ci.quantity,
             ci.price AS effective_price,
@@ -825,6 +843,7 @@ export const getCartItemsWithOffer = async (cartId) => {
             ci.offer_id AS item_offer_id,
             pm.display_name,
             pm.short_description,
+            pm.category_id,
             (
               SELECT pimg.image_url
               FROM product_images pimg
@@ -883,7 +902,14 @@ export const getCartItemsWithOffer = async (cartId) => {
  */
 export const getOfferByProductId = async (productId) => {
   const [rows] = await pool.query(
-    `SELECT om.*,
+    `WITH RECURSIVE ancestors AS (
+       SELECT category_id, parent_id FROM category_master 
+       WHERE category_id = (SELECT category_id FROM product_master WHERE product_id = ?)
+       UNION ALL
+       SELECT c.category_id, c.parent_id FROM category_master c
+       INNER JOIN ancestors a ON c.category_id = a.parent_id
+     )
+     SELECT om.*,
             opc.offer_product_category_id,
             opc.product_id,
             opc.category_id
@@ -893,7 +919,10 @@ export const getOfferByProductId = async (productId) => {
        AND om.is_deleted = 0
        AND opc.is_active = 1
        AND opc.is_deleted = 0
-       AND opc.product_id = ?
+       AND (
+         opc.product_id = ? 
+         OR opc.category_id IN (SELECT category_id FROM ancestors)
+       )
        AND CURDATE() BETWEEN om.start_date AND om.end_date
        AND (
          om.start_time IS NULL OR om.end_time IS NULL
@@ -908,7 +937,7 @@ export const getOfferByProductId = async (productId) => {
          )
        )
      ORDER BY om.discount_value DESC`,
-    [productId],
+    [productId, productId],
   );
   return rows;
 };
@@ -1007,25 +1036,28 @@ export const getApplicableOffersForCategory = async (categoryId) =>
  */
 export const getApplicableCartOffers = async () => {
   const [rows] = await pool.query(
-    `SELECT *
-     FROM offer_master
-     WHERE is_active = 1
-       AND is_deleted = 0
-       AND offer_type IN ('flat_discount', 'first_order', 'time_based')
-       AND CURDATE() BETWEEN start_date AND end_date
+    `SELECT om.*, 
+            opc.product_id, 
+            opc.category_id
+     FROM offer_master om
+     LEFT JOIN offer_product_category opc ON opc.offer_id = om.offer_id AND opc.is_active = 1 AND opc.is_deleted = 0
+     WHERE om.is_active = 1
+       AND om.is_deleted = 0
+       AND om.offer_type IN ('flat_discount', 'first_order', 'time_based', 'category_discount', 'product_discount')
+       AND CURDATE() BETWEEN om.start_date AND om.end_date
        AND (
-         start_time IS NULL OR end_time IS NULL
+         om.start_time IS NULL OR om.end_time IS NULL
          OR (
            CASE 
-             WHEN start_time <= end_time THEN
-               CURTIME() BETWEEN start_time AND end_time
-             WHEN start_time > end_time THEN
-               CURTIME() >= start_time OR CURTIME() <= end_time
+             WHEN om.start_time <= om.end_time THEN
+               CURTIME() BETWEEN om.start_time AND om.end_time
+             WHEN om.start_time > om.end_time THEN
+               CURTIME() >= om.start_time OR CURTIME() <= om.end_time
              ELSE 0
            END
          )
        )
-     ORDER BY discount_value DESC`,
+     ORDER BY om.discount_value DESC`,
   );
   return rows;
 };

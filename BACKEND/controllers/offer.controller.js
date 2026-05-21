@@ -57,12 +57,69 @@ import {
  */
 export const createOfferController = async (req, res) => {
   try {
-    // Validate request payload before creating an offer.
     const offerData = req.body;
     const userId = req.user.id;
 
     if (!offerData || Object.keys(offerData).length === 0) {
       return badRequest(res, "Request body is required");
+    }
+
+    const now = new Date();
+    const todayStr =
+      now.getFullYear() +
+      "-" +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(now.getDate()).padStart(2, "0");
+    const currentTimeStr =
+      String(now.getHours()).padStart(2, "0") +
+      ":" +
+      String(now.getMinutes()).padStart(2, "0");
+
+    // Unified Business Validation for Creation
+    // 1. Minimum date/time checks
+    if (offerData.start_date < todayStr) {
+      return badRequest(res, "start_date cannot be in the past");
+    }
+
+    // 2. Date range check
+    if (new Date(offerData.start_date) > new Date(offerData.end_date)) {
+      return badRequest(res, "start_date must be before end_date");
+    }
+
+    // 3. Same day time check
+    if (
+      offerData.start_date === offerData.end_date &&
+      offerData.start_time >= offerData.end_time
+    ) {
+      return badRequest(res, "start_time must be before end_time");
+    }
+
+    // 4. End time in future check
+    if (
+      offerData.end_date === todayStr &&
+      offerData.end_time <= currentTimeStr
+    ) {
+      return badRequest(res, "end_time must be in the future for today");
+    }
+
+    // 5. Discount validation
+    if (
+      offerData.discount_type === "fixed_amount" &&
+      offerData.maximum_discount_amount !== null &&
+      offerData.maximum_discount_amount < offerData.discount_value
+    ) {
+      return badRequest(
+        res,
+        "maximum_discount_amount cannot be less than discount_value",
+      );
+    }
+
+    // 6. AUTO-ADJUST START TIME для сегодня
+    if (offerData.start_date === todayStr) {
+      if (!offerData.start_time || offerData.start_time < currentTimeStr) {
+        offerData.start_time = currentTimeStr;
+      }
     }
 
     const exists = await checkOfferExist(offerData);
@@ -71,9 +128,26 @@ export const createOfferController = async (req, res) => {
     }
 
     const result = await createOffer(offerData, userId);
+    const offerId = result.insertId;
+
+    // 8. AUTO-CREATE mapping if IDs provided
+    // This allows creating category/product offers in one request
+    const hasProductId = offerData.product_id != null;
+    const hasCategoryId = offerData.category_id != null;
+    if (hasProductId || hasCategoryId) {
+      await createOfferProductCategoryMapping(
+        {
+          offer_id: offerId,
+          product_id: offerData.product_id ?? null,
+          category_id: offerData.category_id ?? null,
+          is_active: 1,
+        },
+        userId,
+      );
+    }
 
     return created(res, "Offer created successfully", {
-      offer_id: result.insertId,
+      offer_id: offerId,
     });
   } catch (error) {
     console.error(error);
@@ -97,7 +171,9 @@ export const createOfferProductCategoryMappingController = async (req, res) => {
     const mappingData = req.body;
     const userId = req.user.id;
 
-    const offer = await getOfferTypeByIdWithoutActiveCheck(mappingData.offer_id);
+    const offer = await getOfferTypeByIdWithoutActiveCheck(
+      mappingData.offer_id,
+    );
     if (!offer) {
       return notFound(res, "Offer not found");
     }
@@ -155,12 +231,7 @@ export const getAllOfferProductCategoryMappingsController = async (
 ) => {
   try {
     const result = await getAllOfferProductCategoryMappings();
-
-    if (!result || result.length === 0) {
-      return notFound(res, "No mappings found");
-    }
-
-    return ok(res, "Offer mappings fetched successfully", result);
+    return ok(res, "Offer mappings fetched successfully", result || []);
   } catch (error) {
     console.error(error);
     return serverError(res, error.message || "Internal server error");
@@ -183,11 +254,7 @@ export const getOfferProductCategoryMappingsByOfferIdController = async (
     }
 
     const result = await getOfferProductCategoryMappingsByOfferId(offerId);
-    if (!result || result.length === 0) {
-      return notFound(res, "No mapping found for this offer");
-    }
-
-    return ok(res, "Offer mappings fetched successfully", result);
+    return ok(res, "Offer mappings fetched successfully", result || []);
   } catch (error) {
     console.error(error);
     return serverError(res, error.message || "Internal server error");
@@ -415,12 +482,176 @@ export const getVisibleOffersByProductIdController = async (req, res) => {
  */
 export const updateOfferByIdController = async (req, res) => {
   try {
-    // Read target offer id from route and partial update payload from body.
     const offerId = req.params.id;
     const offerData = req.body;
     const userId = req.user.id;
 
+    // Fetch existing offer
+    const existingOfferArray = await getOfferById(offerId);
+    if (!existingOfferArray || existingOfferArray.length === 0) {
+      return notFound(res, "Offer not found or already deleted");
+    }
+    const existingOffer = existingOfferArray[0];
+
+    // Helper to normalize dates from DB for comparison
+    const toDateStr = (val) => {
+      if (!val) return null;
+      const d = new Date(val);
+      return (
+        d.getFullYear() +
+        "-" +
+        String(d.getMonth() + 1).padStart(2, "0") +
+        "-" +
+        String(d.getDate()).padStart(2, "0")
+      );
+    };
+
+    const now = new Date();
+    const todayStr = toDateStr(now);
+    const currentTimeStr =
+      String(now.getHours()).padStart(2, "0") +
+      ":" +
+      String(now.getMinutes()).padStart(2, "0");
+
+    // Unified Business Validation for Updating
+    const existingStartDateStr = toDateStr(existingOffer.start_date);
+    const newStartDate = offerData.start_date || existingStartDateStr;
+    const newEndDate = offerData.end_date || toDateStr(existingOffer.end_date);
+    const newStartTime = offerData.start_time || existingOffer.start_time;
+    const newEndTime = offerData.end_time || existingOffer.end_time;
+
+    // 1. Date range check
+    if (new Date(newStartDate) > new Date(newEndDate)) {
+      return badRequest(res, "start_date must be before end_date");
+    }
+
+    // 2. Same day time check
+    if (newStartDate === newEndDate && newStartTime >= newEndTime) {
+      return badRequest(res, "start_time must be before end_time");
+    }
+
+    // 3. Discount validation
+    const discountType = offerData.discount_type || existingOffer.discount_type;
+    const discountValue =
+      offerData.discount_value !== undefined
+        ? offerData.discount_value
+        : existingOffer.discount_value;
+    const maxDiscount =
+      offerData.maximum_discount_amount !== undefined
+        ? offerData.maximum_discount_amount
+        : existingOffer.maximum_discount_amount;
+
+    if (
+      discountType === "fixed_amount" &&
+      maxDiscount !== null &&
+      maxDiscount < discountValue
+    ) {
+      return badRequest(
+        res,
+        "maximum_discount_amount cannot be less than discount_value",
+      );
+    }
+
+    // 4. Offer-Active Check: Don't allow changing start_date to the past
+    if (offerData.start_date && offerData.start_date < todayStr) {
+      return badRequest(res, "Cannot set start_date to the past");
+    }
+
+    // 5. AUTO-ADJUST START TIME
+    // If user sets date to today, ensure time isn't in past
+    if (newStartDate === todayStr) {
+      // Compare with normalized time strings (HH:mm)
+      const startTimeToCompare = newStartTime?.substring(0, 5);
+
+      if (startTimeToCompare < currentTimeStr) {
+        // If they explicitly trying to set a new start_date to today, or if they explicitly set a brand new past time, we bump it.
+        // If it was already today and they didn't touch the date/time, we leave it (it already started).
+        const dateChanged =
+          offerData.start_date && offerData.start_date !== existingStartDateStr;
+
+        const existingStartTimeStr = existingOffer.start_time?.substring(0, 5);
+        const timeChanged =
+          offerData.start_time &&
+          offerData.start_time?.substring(0, 5) !== existingStartTimeStr;
+
+        if (dateChanged || timeChanged) {
+          offerData.start_time = currentTimeStr;
+        }
+      }
+    }
+
     const result = await updateOfferById(offerId, offerData, userId);
+
+    // After updating offer_master, we need to handle product/category mappings
+    // if the offer_type was changed or if specific IDs were provided.
+    const hasProductId = offerData.product_id != null;
+    const hasCategoryId = offerData.category_id != null;
+
+    // Define which types REQUIRE a mapping entry
+    const scopedTypes = ["category_discount", "product_discount"];
+    const targetType = offerData.offer_type || existingOffer.offer_type;
+    const isScoped = scopedTypes.includes(targetType);
+
+    if (offerData.offer_type || hasProductId || hasCategoryId) {
+      // Fetch current mappings
+      const existingMappings =
+        await getOfferProductCategoryMappingsByOfferId(offerId);
+
+      if (!isScoped) {
+        // If it's NOT a scoped discount (e.g. flat, first_order, time_based),
+        // remove any specific product/category mappings to keep DB clean
+        if (existingMappings && existingMappings.length > 0) {
+          for (const mapping of existingMappings) {
+            await deleteOfferProductCategoryMappingById(mapping.id, userId);
+          }
+        }
+      } else {
+        // It's a scoped discount (product or category), needs a mapping
+        // We use either the new IDs provided or fallback to existing mapping if it's there
+        let targetProductId = offerData.product_id;
+        let targetCategoryId = offerData.category_id;
+
+        if (existingMappings && existingMappings.length > 0) {
+          // Update the first existing mapping
+          const firstMapping = existingMappings[0];
+
+          // If IDs weren't provided in the update, keep the old ones from the first mapping
+          if (targetProductId === undefined)
+            targetProductId = firstMapping.product_id;
+          if (targetCategoryId === undefined)
+            targetCategoryId = firstMapping.category_id;
+
+          await updateOfferProductCategoryMappingById(
+            firstMapping.id,
+            {
+              product_id: targetProductId ?? null,
+              category_id: targetCategoryId ?? null,
+              is_active: 1,
+            },
+            userId,
+          );
+          // Delete extras if any
+          for (let i = 1; i < existingMappings.length; i++) {
+            await deleteOfferProductCategoryMappingById(
+              existingMappings[i].id,
+              userId,
+            );
+          }
+        } else {
+          // No mapping exists but we are now a scoped discount, so create one
+          // Even if IDs are null, we create it (though validator usually prevents this for scoped)
+          await createOfferProductCategoryMapping(
+            {
+              offer_id: offerId,
+              product_id: targetProductId ?? null,
+              category_id: targetCategoryId ?? null,
+              is_active: 1,
+            },
+            userId,
+          );
+        }
+      }
+    }
 
     // `affectedRows = 0` means id not found or soft-deleted.
     if (!result || result.affectedRows === 0) {
@@ -558,10 +789,7 @@ export const validateOfferController = async (req, res) => {
       }
 
       if (product_id && category_id) {
-        return badRequest(
-          res,
-          "Provide only one: product_id or category_id",
-        );
+        return badRequest(res, "Provide only one: product_id or category_id");
       }
 
       const { productIds, categoryIds } = await getCartScopeDetails(
@@ -656,11 +884,7 @@ export const getOfferUsageByOfferIdController = async (req, res) => {
 
     const result = await getOfferUsageByOfferId(offerId);
 
-    if (!result || result.length === 0) {
-      return notFound(res, "No usage found for this offer by given offer id");
-    }
-
-    return ok(res, `Offer used ${result.length} times by given offer id`, {
+    return ok(res, `Found ${result.length} usage records for this offer`, {
       usage_details: result,
     });
   } catch (error) {

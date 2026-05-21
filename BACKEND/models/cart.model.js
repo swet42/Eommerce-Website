@@ -36,10 +36,10 @@ async function getCartItemsWithProduct(cartId) {
             ci.offer_id AS item_offer_id,
             pm.display_name,
             pm.short_description,
+            pm.category_id,
             pp.portion_id,
             por.portion_value,
-            pp.price AS portion_price,
-            pp.discounted_price AS portion_discounted_price,
+            pp.price AS portion_price,            pp.discounted_price AS portion_discounted_price,
             mc.name AS combination_name,
             mc.additional_price AS combination_additional_price,
             pi.image_url
@@ -55,19 +55,19 @@ async function getCartItemsWithProduct(cartId) {
   );
 
   // Fetch many-to-many modifiers for each item
-  const cartItemIds = rows.map(r => r.cart_item_id);
+  const cartItemIds = rows.map((r) => r.cart_item_id);
   let modifiersMap = {};
   if (cartItemIds.length > 0) {
     const mods = await getCartItemModifiers(cartItemIds);
-    mods.forEach(m => {
+    mods.forEach((m) => {
       if (!modifiersMap[m.cart_item_id]) modifiersMap[m.cart_item_id] = [];
       modifiersMap[m.cart_item_id].push(m);
     });
   }
 
-  return rows.map(row => ({
+  return rows.map((row) => ({
     ...row,
-    modifiers: modifiersMap[row.cart_item_id] || []
+    modifiers: modifiersMap[row.cart_item_id] || [],
   }));
 }
 
@@ -274,7 +274,7 @@ async function getCombinationPricing(combinationId) {
 
   const combo = rows[0];
   if (!combo || combo.is_deleted || !combo.is_active) return null;
-  if (combo.stock <= 0) return null;  // out of stock
+  if (combo.stock <= 0) return null; // out of stock
 
   return {
     combinationId: combo.combination_id,

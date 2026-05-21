@@ -65,6 +65,20 @@ const offerCreateBaseSchema = z.object({
 
   end_time: z.string().trim().optional().nullable(),
 
+  product_id: z.coerce
+    .number({ invalid_type_error: "product_id must be a number" })
+    .int("product_id must be an integer")
+    .min(1, "product_id must be a positive number")
+    .optional()
+    .nullable(),
+
+  category_id: z.coerce
+    .number({ invalid_type_error: "category_id must be a number" })
+    .int("category_id must be an integer")
+    .min(1, "category_id must be a positive number")
+    .optional()
+    .nullable(),
+
   is_active: z.coerce
     .number({ invalid_type_error: "is_active must be 0 or 1" })
     .int("is_active must be an integer")
@@ -132,6 +146,20 @@ const offerUpdateBaseSchema = z.object({
 
   end_time: z.string().trim().optional().nullable(),
 
+  product_id: z.coerce
+    .number({ invalid_type_error: "product_id must be a number" })
+    .int("product_id must be an integer")
+    .min(1, "product_id must be a positive number")
+    .optional()
+    .nullable(),
+
+  category_id: z.coerce
+    .number({ invalid_type_error: "category_id must be a number" })
+    .int("category_id must be an integer")
+    .min(1, "category_id must be a positive number")
+    .optional()
+    .nullable(),
+
   is_active: z.coerce
     .number({ invalid_type_error: "is_active must be 0 or 1" })
     .int("is_active must be an integer")
@@ -164,14 +192,23 @@ const normalizeDateOnly = (value) => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return null;
 
-  const year = parsed.getUTCFullYear();
-  const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(parsed.getUTCDate()).padStart(2, "0");
+  // Use local time for comparison to match user's perspective
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 };
 
 const normalizeTimeOnly = (value) => {
   if (!value) return null;
+
+  // If it's a Date object (like new Date()), extract local time
+  if (value instanceof Date) {
+    const hours = String(value.getHours()).padStart(2, "0");
+    const minutes = String(value.getMinutes()).padStart(2, "0");
+    return `${hours}:${minutes}`;
+  }
+
   const match = String(value)
     .trim()
     .match(/^(\d{2}:\d{2})/);
@@ -185,166 +222,15 @@ const normalizeTimeOnly = (value) => {
  */
 const refineOfferCreate = (schema) =>
   schema.superRefine((data, ctx) => {
-    const today = normalizeDateOnly(new Date());
-    const startDateOnly = normalizeDateOnly(data.start_date);
-    const endDateOnly = normalizeDateOnly(data.end_date);
-    const currentTime = normalizeTimeOnly(new Date().toTimeString());
-    const startTimeOnly = normalizeTimeOnly(data.start_time);
-    const endTimeOnly = normalizeTimeOnly(data.end_time);
-
-    if (startDateOnly && today && startDateOnly < today) {
-      ctx.addIssue({
-        path: ["start_date"],
-        message: "start_date cannot be in the past",
-      });
-    }
-
-    if (
-      startDateOnly &&
-      today &&
-      startDateOnly === today &&
-      startTimeOnly &&
-      currentTime &&
-      startTimeOnly < currentTime
-    ) {
-      ctx.addIssue({
-        path: ["start_time"],
-        message: "start_time cannot be in the past for today",
-      });
-    }
-
-    if (
-      endDateOnly &&
-      today &&
-      endDateOnly === today &&
-      endTimeOnly &&
-      currentTime &&
-      endTimeOnly <= currentTime
-    ) {
-      ctx.addIssue({
-        path: ["end_time"],
-        message: "end_time must be in the future for today",
-      });
-    }
-
-    if (
-      data.discount_type === "fixed_amount" &&
-      Number.isFinite(data.discount_value) &&
-      Number.isFinite(data.maximum_discount_amount) &&
-      data.maximum_discount_amount < data.discount_value
-    ) {
-      ctx.addIssue({
-        path: ["maximum_discount_amount"],
-        message:
-          "maximum_discount_amount cannot be less than discount_value for fixed_amount",
-      });
-    }
-
-    // Date validation
-    if (startDateOnly && endDateOnly) {
-      if (new Date(data.start_date) > new Date(data.end_date)) {
-        ctx.addIssue({
-          path: ["start_date"],
-          message: "start_date must be before end_date",
-        });
-      }
-    }
-
-    // Time validation (only if both times exist on the same day)
-    if (
-      startDateOnly &&
-      endDateOnly &&
-      startDateOnly === endDateOnly &&
-      data.start_time &&
-      data.end_time &&
-      data.start_time >= data.end_time
-    ) {
-      ctx.addIssue({
-        path: ["start_time"],
-        message: "start_time must be before end_time",
-      });
-    }
+    // No logic here - validation moved to controller
   });
 
 /**
  * Update-offer business validation:
- * - Enforces valid date range when both dates are provided
- * - Enforces valid time range when both times are provided
  */
 const refineOfferUpdate = (schema) =>
   schema.superRefine((data, ctx) => {
-    const today = normalizeDateOnly(new Date());
-    const startDateOnly = normalizeDateOnly(data.start_date);
-    const endDateOnly = normalizeDateOnly(data.end_date);
-    const currentTime = normalizeTimeOnly(new Date().toTimeString());
-    const startTimeOnly = normalizeTimeOnly(data.start_time);
-    const endTimeOnly = normalizeTimeOnly(data.end_time);
-
-    if (
-      startDateOnly &&
-      today &&
-      startDateOnly === today &&
-      startTimeOnly &&
-      currentTime &&
-      startTimeOnly < currentTime
-    ) {
-      ctx.addIssue({
-        path: ["start_time"],
-        message: "start_time cannot be in the past for today",
-      });
-    }
-
-    if (
-      endDateOnly &&
-      today &&
-      endDateOnly === today &&
-      endTimeOnly &&
-      currentTime &&
-      endTimeOnly <= currentTime
-    ) {
-      ctx.addIssue({
-        path: ["end_time"],
-        message: "end_time must be in the future for today",
-      });
-    }
-
-    if (
-      data.discount_type === "fixed_amount" &&
-      Number.isFinite(data.discount_value) &&
-      Number.isFinite(data.maximum_discount_amount) &&
-      data.maximum_discount_amount < data.discount_value
-    ) {
-      ctx.addIssue({
-        path: ["maximum_discount_amount"],
-        message:
-          "maximum_discount_amount cannot be less than discount_value for fixed_amount",
-      });
-    }
-
-    // Date validation (only if both exist)
-    if (startDateOnly && endDateOnly) {
-      if (new Date(data.start_date) > new Date(data.end_date)) {
-        ctx.addIssue({
-          path: ["start_date"],
-          message: "start_date must be before end_date",
-        });
-      }
-    }
-
-    // Time validation (only if both times exist on the same day)
-    if (
-      startDateOnly &&
-      endDateOnly &&
-      startDateOnly === endDateOnly &&
-      data.start_time &&
-      data.end_time &&
-      data.start_time >= data.end_time
-    ) {
-      ctx.addIssue({
-        path: ["start_time"],
-        message: "start_time must be before end_time",
-      });
-    }
+    // No logic here - validation moved to controller
   });
 
 /**

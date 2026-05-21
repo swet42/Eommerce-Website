@@ -50,8 +50,12 @@ export const getCart = async (user_id) => {
     `select ci.cart_item_id, ci.product_id,cm.cart_id,
         ci.quantity,
         ci.product_portion_id, 
-        ci.modifier_id
-         from cart_items ci join cart_master cm on ci.cart_id  = cm.cart_id  where cm.user_id =? and ci.is_deleted=0`,
+        ci.modifier_id,
+        pm.category_id
+         from cart_items ci 
+         join cart_master cm on ci.cart_id  = cm.cart_id  
+         join product_master pm on pm.product_id = ci.product_id
+         where cm.user_id =? and ci.is_deleted=0`,
     [user_id],
   );
 
@@ -61,7 +65,7 @@ export const getCart = async (user_id) => {
       `SELECT cim.cart_item_id, cim.modifier_id 
        FROM cart_item_modifiers cim 
        WHERE cim.cart_item_id IN (?)`,
-      [cartItemIds]
+      [cartItemIds],
     );
     const modMap = {};
     modifierRows.forEach((m) => {
@@ -302,7 +306,10 @@ export const getOfferOnId = async (offer_id) => {
 // Get offer details (type and value)
 export const getOfferDetails = async (offer_id) => {
   const [rows] = await pool.query(
-    "SELECT discount_type, discount_value FROM offer_master WHERE offer_id = ?",
+    `SELECT om.*, opc.product_id, opc.category_id 
+     FROM offer_master om 
+     LEFT JOIN offer_product_category opc ON opc.offer_id = om.offer_id AND opc.is_active = 1 AND opc.is_deleted = 0
+     WHERE om.offer_id = ?`,
     [offer_id],
   );
   return rows;
@@ -378,10 +385,7 @@ export const createCancelRequest = async ({
   return { reason: null, data: rows[0] || null };
 };
 
-export const getCancelRequestsAdmin = async ({
-  status,
-  limit = 100,
-} = {}) => {
+export const getCancelRequestsAdmin = async ({ status, limit = 100 } = {}) => {
   await ensureCancelRequestTable();
 
   const conditions = [];
@@ -483,7 +487,9 @@ export const reviewCancelRequest = async ({
     }
 
     if (normalizedAction === "approve") {
-      const currentOrderStatus = String(request.order_status || "").toLowerCase();
+      const currentOrderStatus = String(
+        request.order_status || "",
+      ).toLowerCase();
       if (!["pending", "processing"].includes(currentOrderStatus)) {
         await connection.rollback();
         return {
@@ -894,26 +900,26 @@ export const getOrderDetailAdmin = async (orderId) => {
 
   // Fetch multiple modifiers if they exist
   if (itemRows.length > 0) {
-    const orderItemIds = itemRows.map(i => i.order_item_id);
+    const orderItemIds = itemRows.map((i) => i.order_item_id);
     const [modifierRows] = await pool.query(
       `SELECT * FROM order_item_modifiers WHERE order_item_id IN (?)`,
-      [orderItemIds]
+      [orderItemIds],
     );
     const modMap = {};
-    modifierRows.forEach(m => {
-       if (!modMap[m.order_item_id]) modMap[m.order_item_id] = [];
-       modMap[m.order_item_id].push(m);
+    modifierRows.forEach((m) => {
+      if (!modMap[m.order_item_id]) modMap[m.order_item_id] = [];
+      modMap[m.order_item_id].push(m);
     });
-    itemRows.forEach(item => {
-       item.modifiers = modMap[item.order_item_id] || [];
-       if (item.modifiers.length === 0 && item.modifier_value) {
-          item.modifiers.push({
-             modifier_id: item.modifier_id,
-             modifier_name: null,
-             modifier_value: item.modifier_value,
-             additional_price: 0
-          });
-       }
+    itemRows.forEach((item) => {
+      item.modifiers = modMap[item.order_item_id] || [];
+      if (item.modifiers.length === 0 && item.modifier_value) {
+        item.modifiers.push({
+          modifier_id: item.modifier_id,
+          modifier_name: null,
+          modifier_value: item.modifier_value,
+          additional_price: 0,
+        });
+      }
     });
   }
 
@@ -1016,7 +1022,12 @@ export const updatePaymentStatusAdmin = async (
     ).toLowerCase();
     const nextPaymentStatus = String(paymentStatus || "").toLowerCase();
 
-    if (!Object.prototype.hasOwnProperty.call(PAYMENT_STATUS_TRANSITIONS, nextPaymentStatus)) {
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        PAYMENT_STATUS_TRANSITIONS,
+        nextPaymentStatus,
+      )
+    ) {
       await connection.rollback();
       return { affectedRows: 0, reason: "INVALID_STATUS" };
     }
@@ -1056,7 +1067,9 @@ export const updatePaymentStatusAdmin = async (
     if (
       nextPaymentStatus === "completed" &&
       order.payment_method === "cash_on_delivery" &&
-      !["delivered", "completed"].includes(String(order.order_status).toLowerCase())
+      !["delivered", "completed"].includes(
+        String(order.order_status).toLowerCase(),
+      )
     ) {
       await connection.rollback();
       return {
@@ -1112,7 +1125,12 @@ export const updatePaymentStatusAdmin = async (
       );
     }
 
-    await syncOrderPaymentFields(connection, orderId, nextPaymentStatus, updatedBy);
+    await syncOrderPaymentFields(
+      connection,
+      orderId,
+      nextPaymentStatus,
+      updatedBy,
+    );
 
     await connection.commit();
 
@@ -1121,7 +1139,9 @@ export const updatePaymentStatusAdmin = async (
       payment_status: nextPaymentStatus,
       order_status:
         nextPaymentStatus === "refunded" &&
-        !["cancelled", "refunded"].includes(String(order.order_status).toLowerCase())
+        !["cancelled", "refunded"].includes(
+          String(order.order_status).toLowerCase(),
+        )
           ? "refunded"
           : order.order_status,
     };

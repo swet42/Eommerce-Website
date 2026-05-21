@@ -1,3 +1,4 @@
+import pool from "../configs/db.js";
 import {
   getCart,
   getCompareProductCategory,
@@ -30,6 +31,13 @@ import {
   getLatestCancelRequestForOrder,
 } from "../models/Order_master.model.js";
 import { insertQuery } from "../models/Order_items.model.js";
+import {
+  createOfferUsage,
+  getCartWithOffer,
+  getCartItemsWithOffer,
+} from "../models/offer.model.js";
+import { buildCartResponse } from "./cart.controller.js";
+import { getOrCreateCartByUserId } from "../models/cart.model.js";
 
 import {
   badRequest,
@@ -82,13 +90,25 @@ export const Order_master = async (req, res) => {
     const insert = await insertValue(values);
     const orderId = insert.insertId;
 
+    if (summary.offer_id && summary.totalDisCount > 0) {
+      await createOfferUsage({
+        offer_id: summary.offer_id,
+        user_id: user_id,
+        order_id: orderId,
+        discount_amount: summary.totalDisCount,
+        created_by: user_id,
+        updated_by: user_id,
+      });
+    }
+
     await postOrderItems(
       user_id,
       orderId,
       summary.price,
       summary.taxAmountArray,
-      [],
+      summary.discountAmountArray,
       summary.cart,
+      summary.cartId,
     );
 
     const createdOrder = await getOrderById(orderId);
@@ -133,85 +153,50 @@ export const getOrderSummery = async (req, res) => {
     return serverError(res);
   }
 };
+
 const calculateOrderValues = async (user_id) => {
-  const cart = await getCart(user_id);
-  if (cart.length === 0) {
+  const cartInfo = await getOrCreateCartByUserId(user_id);
+  const cartId = cartInfo.cart_id;
+
+  const cartData = await getCartWithOffer(cartId);
+  const cartOffer =
+    cartData.length > 0 && cartData[0].offer_id
+      ? {
+          ...cartData[0],
+          mappings: cartData
+            .filter((row) => row.product_id || row.category_id)
+            .map((row) => ({
+              product_id: row.product_id,
+              category_id: row.category_id,
+            })),
+        }
+      : null;
+
+  const items = await getCartItemsWithOffer(cartId);
+  if (items.length === 0) {
     throw new Error("Cart is empty");
   }
 
-  const productsIds = cart.map((item) => item.product_id);
-  const products = await getProducts(productsIds);
-
-  const portionIds = cart.map((item) => item.product_portion_id);
-
-  let price = [];
-
-  for (let i = 0; i < portionIds.length; i++) {
-    if (portionIds[i] == 0 || portionIds[i] == null) {
-      price.push(Number(products[i].price));
-      continue;
-    }
-
-    const portionPrice = await getPortionPrice(productsIds[i], portionIds[i]);
-    price.push(Number(portionPrice[0].price));
-  }
-
-  const totalPrice = price.reduce((sum, val) => sum + val, 0);
-
-  /* TAX CALCULATION */
-
-  const rootCategoryEntries = await Promise.all(
-    products.map(async (t) => {
-      const rootId = await findRootCategory(t.category_id);
-      return [t.product_id, rootId];
-    }),
-  );
-
-  const rootCategoryMap = Object.fromEntries(rootCategoryEntries);
-
-  const taxAmountArray = cart.map((item, index) => {
-    const categoryId = rootCategoryMap[item.product_id];
-    const taxPercent = getTaxPercent(categoryId);
-
-    return (price[index] * taxPercent) / 100;
-  });
-
-  const totalTax = taxAmountArray.reduce((sum, value) => sum + value, 0);
-
-  /* DISCOUNT */
-
-  let totalDisCount = 0;
-  let offer_id = null;
-
-  const offerOnCart = await getOfferOnCart(user_id);
-  offer_id = offerOnCart[0]?.offer_id || null;
-
-  const findOffer = await getOfferDetails(offer_id);
-
-  if (findOffer.length > 0) {
-    if (findOffer[0].discount_type === "percentage") {
-      totalDisCount = (totalPrice * Number(findOffer[0].discount_value)) / 100;
-    }
-
-    if (findOffer[0].discount_type === "fixed_amount") {
-      totalDisCount = Number(findOffer[0].discount_value);
-    }
-  }
-
-  const finalAmount = totalPrice + totalTax - totalDisCount;
-
-  let shipping_amount = 50;
-  if (finalAmount > 500) shipping_amount = 0;
+  const response = await buildCartResponse(cartId, items, cartOffer);
 
   return {
-    cart,
-    price,
-    taxAmountArray,
-    totalPrice,
-    totalTax,
-    totalDisCount,
-    finalAmount,
-    shipping_amount,
+    cart: items,
+    cartId: cartId,
+    totalPrice: response.subtotal,
+    totalTax: response.tax,
+    totalDisCount: response.discount,
+    finalAmount: response.total,
+    shipping_amount: response.total > 500 ? 0 : 50,
+    offer_id: cartOffer?.offer_id || null,
+    price: response.items.map((item) => item.lineTotal),
+    taxAmountArray: response.items.map((item) => item.taxAmount),
+    discountAmountArray: response.items.map((item) => ({
+      offer_id:
+        item.appliedOffer?.offer_id || item.cartDiscountShare
+          ? response.appliedCartOffer?.offer_id
+          : null,
+      discount_amount: item.totalLineDiscount || 0,
+    })),
   };
 };
 // Retrieve all orders for a user with pagination
@@ -273,8 +258,9 @@ export const postOrderItems = async (
   taxAmountArray,
   totalDisCountArray,
   cart,
+  cartId,
 ) => {
-  const cart_id = cart[0]?.cart_id;
+  const cart_id = cartId;
   // Extract product IDs from cart
   const productIds = cart.map((item) => item.product_id);
   let offer_id = null;
@@ -283,7 +269,7 @@ export const postOrderItems = async (
   // Fetch primary category for each product
   const productCategories = await getCompareProductCategory(productIds);
   const categoryIds = productCategories.map((item) => item.category_id);
-  
+
   // Collect all modifier IDs across all cart items
   const allModifierIds = [];
   cart.forEach((item) => {
@@ -295,15 +281,18 @@ export const postOrderItems = async (
 
   const portionIds = cart.map((item) => item.product_portion_id);
   const portionRows = await getPortionValue(portionIds);
-  const modifierRows = uniqueModifierIds.length > 0 ? await getModifierValue(uniqueModifierIds) : [];
+  const modifierRows =
+    uniqueModifierIds.length > 0
+      ? await getModifierValue(uniqueModifierIds)
+      : [];
   const quantities = cart.map((item) => item.quantity);
   const portionMap = Object.fromEntries(
     portionRows.map((p) => [p.portion_id, p.portion_value]),
   );
 
   const modifierMap = {};
-  modifierRows.forEach(m => {
-     modifierMap[m.modifier_id] = m;
+  modifierRows.forEach((m) => {
+    modifierMap[m.modifier_id] = m;
   });
 
   // Fetch product names
@@ -328,13 +317,21 @@ export const postOrderItems = async (
     // Calculate final total for this order item
     const p = isNaN(price[i]) ? 0 : Number(price[i]);
     const t = isNaN(taxAmountArray[i]) ? 0 : Number(taxAmountArray[i]);
-    const d = Number(totalDisCountArray[i]?.offer_id) || 0;
+    const d = Number(totalDisCountArray[i]?.discount_amount) || 0;
     const finalTotal = p + t - d;
 
     const itemModifiers = cart[i].modifier_ids || [];
-    const itemModifierObjects = itemModifiers.map(id => modifierMap[id]).filter(Boolean);
-    const primaryModifierId = itemModifierObjects.length > 0 ? itemModifierObjects[0].modifier_id : null;
-    const primaryModifierValue = itemModifierObjects.length > 0 ? itemModifierObjects[0].modifier_value : null;
+    const itemModifierObjects = itemModifiers
+      .map((id) => modifierMap[id])
+      .filter(Boolean);
+    const primaryModifierId =
+      itemModifierObjects.length > 0
+        ? itemModifierObjects[0].modifier_id
+        : null;
+    const primaryModifierValue =
+      itemModifierObjects.length > 0
+        ? itemModifierObjects[0].modifier_value
+        : null;
 
     modifiersMapping.push(itemModifierObjects);
 
@@ -361,20 +358,6 @@ export const postOrderItems = async (
   await insertQuery(values, cart_id, orderId, modifiersMapping);
 };
 
-// Find root category ID for tax calculation
-const findRootCategory = async (categoryId) => {
-  const rows = await getRootCategoryId(categoryId);
-  return rows[0]?.category_id;
-};
-
-// Get tax percentage based on root category
-const getTaxPercent = (rootCategoryId) => {
-  const TAX_RULES = {
-    1: 18,
-    27: 5,
-  };
-  return TAX_RULES[rootCategoryId] || 0;
-};
 export const changeOrderStatusByAdmin = async (req, res) => {
   try {
     const latestStatus = req.body.latestStatus;
@@ -557,12 +540,10 @@ export const requestCancelOrderByUser = async (req, res) => {
     }
 
     if (order.user_id !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          message:
-            "You do not have permission to request cancellation for this order.",
-        });
+      return res.status(403).json({
+        message:
+          "You do not have permission to request cancellation for this order.",
+      });
     }
 
     if (!USER_CANCELABLE_STATUSES.has(order.order_status)) {

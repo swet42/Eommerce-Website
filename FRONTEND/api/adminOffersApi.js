@@ -27,7 +27,11 @@ export const updateAdminOfferStatus = async (id, isActive) => {
   return response.data;
 };
 
-export const createAdminOfferMapping = async ({ offer_id, product_id, category_id }) => {
+export const createAdminOfferMapping = async ({
+  offer_id,
+  product_id,
+  category_id,
+}) => {
   const response = await api.post("/offer/mapping/create", {
     offer_id,
     product_id: product_id ?? null,
@@ -49,4 +53,9 @@ export const fetchAdminOfferMappings = async () => {
 export const updateAdminOfferMapping = async (mappingId, data) => {
   const response = await api.patch(`/offer/mapping/update/${mappingId}`, data);
   return response.data;
+};
+
+export const fetchAdminOfferUsage = async (offerId) => {
+  const response = await api.get(`/offer/usagebyoffer/${offerId}`);
+  return response.data?.data?.usage_details || [];
 };

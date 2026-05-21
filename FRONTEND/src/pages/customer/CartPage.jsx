@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
 import { Button } from "primereact/button";
 import { ConfirmDialog, confirmDialog } from "primereact/confirmdialog";
+import { Toast } from "primereact/toast";
 import { Tag } from "primereact/tag";
 import { Skeleton } from "primereact/skeleton";
 import { EmptyCart } from "../../components/cart/EmptyCart";
@@ -46,6 +47,7 @@ function CartPage() {
   const navigate = useNavigate();
   const dispatch = useDispatch();
   const { currentUser } = useSelector((state) => state.auth);
+  const toast = useRef(null);
 
   const [cart, setCart] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -74,6 +76,7 @@ function CartPage() {
 
       // Fetch applicable offers
       const offersRes = await api.get("/cart/offers");
+      console.log("DEBUG: Applicable offers response:", offersRes.data);
       // Backend returns { success, message, data: { cartOffers: [...], productOffers: [...] } }
       const offersData = offersRes.data.data || {};
       // Combine cart and product offers, adding type field for filtering
@@ -84,7 +87,9 @@ function CartPage() {
       const productOffersWithType = (offersData.productOffers || []).map(
         (o) => ({ ...o, type: "product" }),
       );
-      setApplicableOffers([...cartOffersWithType, ...productOffersWithType]);
+      const combinedOffers = [...cartOffersWithType, ...productOffersWithType];
+      console.log("DEBUG: Setting combined applicable offers:", combinedOffers);
+      setApplicableOffers(combinedOffers);
     } catch (error) {
       console.error("Error fetching cart:", error);
       setCart(null);
@@ -118,6 +123,12 @@ function CartPage() {
       window.setTimeout(() => setPulseCartItemId(null), 650);
     } catch (error) {
       console.error("Error updating quantity:", error);
+      toast.current?.show({
+        severity: "error",
+        summary: "Error",
+        detail: error.response?.data?.message || "Could not update quantity",
+        life: 3000,
+      });
     } finally {
       setUpdatingItem(null);
     }
@@ -140,6 +151,12 @@ function CartPage() {
           window.dispatchEvent(new CustomEvent("cart:updated"));
         } catch (error) {
           console.error("Error removing item:", error);
+          toast.current?.show({
+            severity: "error",
+            summary: "Error",
+            detail: error.response?.data?.message || "Could not remove item",
+            life: 3000,
+          });
         }
       },
     });
@@ -168,8 +185,9 @@ function CartPage() {
   };
 
   // Apply cart-level offer
-  const applyOffer = async () => {
-    if (!offerCode.trim()) return;
+  const applyOffer = async (code = null) => {
+    const finalCode = code || offerCode;
+    if (!finalCode.trim()) return;
 
     setApplyingOffer(true);
 
@@ -177,8 +195,8 @@ function CartPage() {
       // Find offer by code from applicable offers
       const offer = applicableOffers.find(
         (o) =>
-          o.offer_name?.toLowerCase() === offerCode.toLowerCase() ||
-          o.offer_id?.toString() === offerCode,
+          o.offer_name?.toLowerCase() === finalCode.toLowerCase() ||
+          o.offer_id?.toString() === finalCode,
       );
 
       if (!offer) {
@@ -186,12 +204,19 @@ function CartPage() {
         return;
       }
 
-      // Check if it's a product offer or cart offer
+      // Check if it's a product/category offer or cart offer
       if (offer.type === "product") {
-        // Find the cart item for this product
-        const cartItem = cart.items.find(
-          (item) => item.productId === offer.product_id,
-        );
+        // Find the cart item for this product/category
+        const cartItem = cart.items.find((item) => {
+          if (offer.product_id) return item.productId === offer.product_id;
+          if (offer.category_id) {
+            return (
+              item.categoryId === offer.category_id ||
+              item.categoryIds?.includes(offer.category_id)
+            );
+          }
+          return false;
+        });
         if (!cartItem) {
           setApplyingOffer(false);
           return;
@@ -214,6 +239,12 @@ function CartPage() {
       setOfferCode("");
     } catch (error) {
       console.error("Error applying offer:", error);
+      toast.current?.show({
+        severity: "error",
+        summary: "Offer Error",
+        detail: error.response?.data?.message || "Could not apply offer",
+        life: 3000,
+      });
     } finally {
       setApplyingOffer(false);
     }
@@ -223,10 +254,17 @@ function CartPage() {
   const applyProductOffer = async (offer) => {
     if (!cart) return;
 
-    // Find the cart item for this product
-    const cartItem = cart.items.find(
-      (item) => item.productId === offer.product_id,
-    );
+    // Find the cart item for this product/category
+    const cartItem = cart.items.find((item) => {
+      if (offer.product_id) return item.productId === offer.product_id;
+      if (offer.category_id) {
+        return (
+          item.categoryId === offer.category_id ||
+          item.categoryIds?.includes(offer.category_id)
+        );
+      }
+      return false;
+    });
     if (!cartItem) {
       return;
     }
@@ -244,6 +282,12 @@ function CartPage() {
       setCart(response.data.data);
     } catch (error) {
       console.error("Error applying product offer:", error);
+      toast.current?.show({
+        severity: "error",
+        summary: "Offer Error",
+        detail: error.response?.data?.message || "Could not apply offer",
+        life: 3000,
+      });
     }
   };
 
@@ -254,6 +298,12 @@ function CartPage() {
       setCart(response.data.data);
     } catch (error) {
       console.error("Error removing item offer:", error);
+      toast.current?.show({
+        severity: "error",
+        summary: "Error",
+        detail: error.response?.data?.message || "Could not remove offer",
+        life: 3000,
+      });
     }
   };
 
@@ -264,6 +314,12 @@ function CartPage() {
       setCart(response.data.data);
     } catch (error) {
       console.error("Error removing offer:", error);
+      toast.current?.show({
+        severity: "error",
+        summary: "Error",
+        detail: error.response?.data?.message || "Could not remove offer",
+        life: 3000,
+      });
     }
   };
 
@@ -303,18 +359,19 @@ function CartPage() {
   const getAvailableProductOffers = () => {
     if (!cart || !applicableOffers.length) return [];
 
-    // Get offers that are type='product' and match products in cart
+    // Get offers that are type='product' (product_discount only - category_discount is now cart-level)
     return applicableOffers.filter((offer) => {
       if (offer.type !== "product") return false;
 
-      // Find the cart item this offer applies to
-      const matchingItem = cart.items.find(
-        (item) => item.productId === offer.product_id,
-      );
+      // Find the cart item this offer applies to (product_discount uses direct product_id)
+      const matchingItem = cart.items.find((item) => {
+        if (offer.product_id) return item.productId === offer.product_id;
+        return false;
+      });
 
       // Only show if:
       // 1. The product is in the cart
-      // 2. The offer doesn't already have an applied offer on that item
+      // 2. The item doesn't already have an applied offer
       return matchingItem && !matchingItem.appliedOffer;
     });
   };
@@ -371,6 +428,7 @@ function CartPage() {
 
   return (
     <div className="min-h-screen bg-[#fff8ee] dark:bg-[#0b151b]">
+      <Toast ref={toast} />
       <ConfirmDialog
         className="cart-confirm-dialog"
         contentClassName="dark:bg-[#151e22]"
@@ -515,7 +573,7 @@ function CartPage() {
                                 className="text-xs"
                               />
                             ) : item.modifiers && item.modifiers.length > 0 ? (
-                              item.modifiers.map((mod, idx) => (
+                              item.modifiers.map((mod, idx) =>
                                 (() => {
                                   const value =
                                     mod.modifier_value ??
@@ -525,24 +583,28 @@ function CartPage() {
                                     "Modifier";
                                   const add =
                                     Number(
-                                      mod.additional_price ?? mod.additionalPrice ?? 0,
+                                      mod.additional_price ??
+                                        mod.additionalPrice ??
+                                        0,
                                     ) || 0;
                                   return (
+                                    <Tag
+                                      key={idx}
+                                      value={`${value}${add > 0 ? ` (+₹${add})` : ""}`}
+                                      severity="secondary"
+                                      className="text-xs"
+                                    />
+                                  );
+                                })(),
+                              )
+                            ) : (
+                              item.modifierValue && (
                                 <Tag
-                                  key={idx}
-                                  value={`${value}${add > 0 ? ` (+₹${add})` : ""}`}
+                                  value={item.modifierValue}
                                   severity="secondary"
                                   className="text-xs"
                                 />
-                                  );
-                                })()
-                              ))
-                            ) : item.modifierValue && (
-                              <Tag
-                                value={item.modifierValue}
-                                severity="secondary"
-                                className="text-xs"
-                              />
+                              )
                             )}
                           </div>
                         )}
@@ -569,19 +631,30 @@ function CartPage() {
                             </button>
                           </div>
                         )}
+
+                        {/* Cart-level Scoped Offer Info */}
+                        {item.isMatchedByCartOffer && cart.appliedCartOffer && (
+                          <div className="mt-2 text-xs font-medium text-green-600 dark:text-green-400 flex items-center gap-1">
+                            <i className="pi pi-ticket text-[10px]" />
+                            <span>
+                              Included in {cart.appliedCartOffer.offer_name}
+                            </span>
+                          </div>
+                        )}
                       </div>
 
                       {/* Price */}
                       <div className="text-right sm:text-right">
-                  <p className="text-xs text-gray-500 dark:text-slate-400">
-                    ₹{formatINR(item.price)} each
-                  </p>
+                        <p className="text-xs text-gray-500 dark:text-slate-400">
+                          ₹{formatINR(item.price)} each
+                        </p>
                         <p className="font-semibold text-gray-900 dark:text-slate-100 text-base sm:text-lg">
                           ₹{formatINR(item.lineTotal)}
                         </p>
                         {Number(item.taxAmount) > 0 ? (
                           <p className="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400">
-                            GST {Number(item.taxPercent || 0)}%: ₹{formatINR(item.taxAmount)}
+                            GST {Number(item.taxPercent || 0)}%: ₹
+                            {formatINR(item.taxAmount)}
                           </p>
                         ) : null}
                         {item.appliedOffer && (
@@ -682,9 +755,9 @@ function CartPage() {
                   <div className="space-y-2">
                     {getAvailableProductOffers().map((offer) => {
                       // Find the product this offer applies to
-                      const productItem = cart.items.find(
-                        (item) => item.productId === offer.product_id,
-                      );
+                      const productItem = cart.items.find((item) => {
+                        return item.productId === offer.product_id;
+                      });
                       const isApplied =
                         productItem?.appliedOffer?.offer_id === offer.offer_id;
 
@@ -815,8 +888,7 @@ function CartPage() {
                                     label="Apply"
                                     size="small"
                                     onClick={() => {
-                                      setOfferCode(offer.offer_name);
-                                      applyOffer();
+                                      applyOffer(offer.offer_name);
                                     }}
                                     className="!bg-[#2f7a6f] !border-[#2f7a6f] hover:!bg-[#236b62] !text-white !text-xs !px-2 !py-1"
                                   />
@@ -972,4 +1044,3 @@ function CartPage() {
 }
 
 export default CartPage;
-

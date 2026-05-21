@@ -7,12 +7,15 @@ import {
   fetchAdminOfferMappings,
   fetchAdminOfferMappingsByOfferId,
   fetchAdminOffers,
+  fetchAdminOfferUsage,
   updateAdminOffer,
   updateAdminOfferMapping,
   updateAdminOfferStatus,
 } from "../../../api/adminOffersApi";
-import { fetchAdminProducts, fetchCategories } from "../../../api/adminProductsApi";
-import api from "../../../api/api";
+import {
+  fetchAdminProducts,
+  fetchCategories,
+} from "../../../api/adminProductsApi";
 import AdminOffersToolbar from "./AdminOffersToolbar";
 import AdminOffersTable from "./AdminOffersTable";
 import OfferFormModal from "./OfferFormModal";
@@ -162,29 +165,34 @@ function AdminOffersTab() {
     }, {});
   }, []);
 
-  const mapOfferToForm = useCallback((offer) => ({
-    offer_name: offer.offer_name || "",
-    description: offer.description || "",
-    offer_type: offer.offer_type || "flat_discount",
-    discount_type: offer.discount_type || "percentage",
-    discount_value: offer.discount_value ?? "",
-    maximum_discount_amount: offer.maximum_discount_amount ?? "",
-    min_purchase_amount:
-      offer.min_purchase_amount === null || offer.min_purchase_amount === undefined
-        ? ""
-        : offer.min_purchase_amount,
-    usage_limit_per_user:
-      offer.usage_limit_per_user === null || offer.usage_limit_per_user === undefined
-        ? ""
-        : offer.usage_limit_per_user,
-    start_date: toInputDate(offer.start_date),
-    end_date: toInputDate(offer.end_date),
-    start_time: toInputTime(offer.start_time),
-    end_time: toInputTime(offer.end_time),
-    product_id: null,
-    category_id: null,
-    is_active: Boolean(offer.is_active),
-  }), []);
+  const mapOfferToForm = useCallback(
+    (offer) => ({
+      offer_name: offer.offer_name || "",
+      description: offer.description || "",
+      offer_type: offer.offer_type || "flat_discount",
+      discount_type: offer.discount_type || "percentage",
+      discount_value: offer.discount_value ?? "",
+      maximum_discount_amount: offer.maximum_discount_amount ?? "",
+      min_purchase_amount:
+        offer.min_purchase_amount === null ||
+        offer.min_purchase_amount === undefined
+          ? ""
+          : offer.min_purchase_amount,
+      usage_limit_per_user:
+        offer.usage_limit_per_user === null ||
+        offer.usage_limit_per_user === undefined
+          ? ""
+          : offer.usage_limit_per_user,
+      start_date: toInputDate(offer.start_date),
+      end_date: toInputDate(offer.end_date),
+      start_time: toInputTime(offer.start_time),
+      end_time: toInputTime(offer.end_time),
+      product_id: null,
+      category_id: null,
+      is_active: Boolean(offer.is_active),
+    }),
+    [],
+  );
 
   const loadOffers = useCallback(async () => {
     setLoading(true);
@@ -197,8 +205,12 @@ function AdminOffersTab() {
         mappings = [];
       }
 
-      const productNameById = new Map(products.map((item) => [item.value, item.label]));
-      const categoryNameById = new Map(categories.map((item) => [item.value, item.label]));
+      const productNameById = new Map(
+        products.map((item) => [item.value, item.label]),
+      );
+      const categoryNameById = new Map(
+        categories.map((item) => [item.value, item.label]),
+      );
       const mappingsByOfferId = new Map();
       (mappings || []).forEach((mapping) => {
         if (!mappingsByOfferId.has(mapping.offer_id)) {
@@ -218,13 +230,15 @@ function AdminOffersTab() {
 
           if (offer.offer_type === "product_discount") {
             const productId = mapping?.product_id;
-            scopeName = productNameById.get(productId) || `Product #${productId || "-"}`;
+            scopeName =
+              productNameById.get(productId) || `Product #${productId || "-"}`;
           }
 
           if (offer.offer_type === "category_discount") {
             const categoryId = mapping?.category_id;
             scopeName =
-              categoryNameById.get(categoryId) || `Category #${categoryId || "-"}`;
+              categoryNameById.get(categoryId) ||
+              `Category #${categoryId || "-"}`;
           }
 
           return {
@@ -344,8 +358,7 @@ function AdminOffersTab() {
       setUsageRows([]);
 
       try {
-        const response = await api.get(`/offer/usagebyoffer/${offer.offer_id}`);
-        const rows = response.data?.data?.usage_details || [];
+        const rows = await fetchAdminOfferUsage(offer.offer_id);
         setUsageRows(rows);
       } catch (error) {
         setUsageRows([]);
@@ -409,7 +422,11 @@ function AdminOffersTab() {
     const minPurchase = Number(form.min_purchase_amount);
     const usageLimit = Number(form.usage_limit_per_user);
 
-    if (form.discount_value === "" || Number.isNaN(discountValue) || discountValue < 0) {
+    if (
+      form.discount_value === "" ||
+      Number.isNaN(discountValue) ||
+      discountValue < 0
+    ) {
       errors.discount_value = "Discount value is required";
     }
     if (form.discount_type === "percentage" && discountValue > 100) {
@@ -429,7 +446,8 @@ function AdminOffersTab() {
         form.min_purchase_amount !== "" &&
         (Number.isNaN(minPurchase) || minPurchase < 0)
       ) {
-        errors.min_purchase_amount = "Min purchase amount must be a valid number";
+        errors.min_purchase_amount =
+          "Min purchase amount must be a valid number";
       }
     } else if (
       form.min_purchase_amount === "" ||
@@ -469,12 +487,25 @@ function AdminOffersTab() {
       }
     }
 
-    if (
-      form.start_date === today &&
-      form.start_time &&
-      form.start_time < currentTime
-    ) {
-      errors.start_time = "Start time cannot be in the past for today";
+    // Past-time check for today
+    if (form.start_date === today && form.start_time) {
+      const isCreateMode = !selectedOffer;
+      const originalStartDate = selectedOffer
+        ? toInputDate(selectedOffer.start_date)
+        : null;
+      const originalStartTime = selectedOffer
+        ? toInputTime(selectedOffer.start_time)
+        : null;
+
+      const dateChanged = form.start_date !== originalStartDate;
+      const timeChanged = form.start_time !== originalStartTime;
+
+      // Only error if it's a new offer, OR if they modified the date/time to a past value.
+      if (isCreateMode || dateChanged || timeChanged) {
+        if (form.start_time < currentTime) {
+          errors.start_time = "Start time cannot be in the past for today";
+        }
+      }
     }
 
     if (form.end_date === today) {
@@ -503,12 +534,14 @@ function AdminOffersTab() {
     }
 
     return errors;
-  }, [form]);
+  }, [form, selectedOffer]);
 
   const buildPayload = useCallback(() => {
     const today = getTodayDateString();
     const autoStartTime =
-      form.start_date === today && !form.start_time ? getCurrentTimeString() : null;
+      form.start_date === today && !form.start_time
+        ? getCurrentTimeString()
+        : null;
 
     return {
       offer_name: form.offer_name.trim(),
@@ -518,14 +551,24 @@ function AdminOffersTab() {
       discount_value: Number(form.discount_value),
       maximum_discount_amount: Number(form.maximum_discount_amount),
       min_purchase_amount:
-        form.min_purchase_amount === "" ? null : Number(form.min_purchase_amount),
+        form.min_purchase_amount === ""
+          ? null
+          : Number(form.min_purchase_amount),
       usage_limit_per_user:
-        form.usage_limit_per_user === "" ? null : Number(form.usage_limit_per_user),
+        form.usage_limit_per_user === ""
+          ? null
+          : Number(form.usage_limit_per_user),
       start_date: `${form.start_date} 00:00:00`,
       end_date: `${form.end_date} 23:59:59`,
       start_time: form.start_time || autoStartTime,
       end_time: form.end_time || null,
       is_active: form.is_active ? 1 : 0,
+      product_id:
+        form.offer_type === "product_discount" ? Number(form.product_id) : null,
+      category_id:
+        form.offer_type === "category_discount"
+          ? Number(form.category_id)
+          : null,
     };
   }, [form]);
 
@@ -552,60 +595,9 @@ function AdminOffersTab() {
       const payload = buildPayload();
       if (selectedOffer?.offer_id) {
         await updateAdminOffer(selectedOffer.offer_id, payload);
-
-        if (
-          form.offer_type === "product_discount" ||
-          form.offer_type === "category_discount"
-        ) {
-          const mappings = await fetchAdminOfferMappingsByOfferId(selectedOffer.offer_id);
-          const scopeMapping = pickScopeMapping(mappings, form.offer_type);
-          const mappingPayload =
-            form.offer_type === "product_discount"
-              ? { product_id: Number(form.product_id) }
-              : { category_id: Number(form.category_id) };
-
-          if (scopeMapping?.offer_product_category_id) {
-            await updateAdminOfferMapping(
-              scopeMapping.offer_product_category_id,
-              mappingPayload,
-            );
-          } else {
-            await createAdminOfferMapping({
-              offer_id: selectedOffer.offer_id,
-              ...mappingPayload,
-            });
-          }
-        } else {
-          const mappings = await fetchAdminOfferMappingsByOfferId(selectedOffer.offer_id);
-          await Promise.all(
-            (mappings || [])
-              .filter((m) => m?.offer_product_category_id)
-              .map((m) =>
-                updateAdminOfferMapping(m.offer_product_category_id, {
-                  product_id: null,
-                  category_id: null,
-                }),
-              ),
-          );
-        }
-
         showToast("success", "Success", "Offer updated successfully");
       } else {
-        const result = await createAdminOffer(payload);
-        const newOfferId = result?.data?.offer_id;
-
-        if (
-          newOfferId &&
-          (form.offer_type === "product_discount" || form.offer_type === "category_discount")
-        ) {
-          await createAdminOfferMapping({
-            offer_id: newOfferId,
-            product_id: form.offer_type === "product_discount" ? Number(form.product_id) : null,
-            category_id:
-              form.offer_type === "category_discount" ? Number(form.category_id) : null,
-          });
-        }
-
+        await createAdminOffer(payload);
         showToast("success", "Success", "Offer created successfully");
       }
       handleCloseForm();
@@ -640,21 +632,24 @@ function AdminOffersTab() {
     validateForm,
   ]);
 
-  const handleConfirmDelete = useCallback(async (offer) => {
-    if (!offer?.offer_id) return;
+  const handleConfirmDelete = useCallback(
+    async (offer) => {
+      if (!offer?.offer_id) return;
 
-    setDeleting(true);
-    try {
-      await deleteAdminOffer(offer.offer_id);
-      showToast("success", "Success", "Offer deleted successfully");
-      handleCloseDelete();
-      await loadOffers();
-    } catch (error) {
-      showToast("error", "Error", getErrorMessage(error));
-    } finally {
-      setDeleting(false);
-    }
-  }, [getErrorMessage, handleCloseDelete, loadOffers, showToast]);
+      setDeleting(true);
+      try {
+        await deleteAdminOffer(offer.offer_id);
+        showToast("success", "Success", "Offer deleted successfully");
+        handleCloseDelete();
+        await loadOffers();
+      } catch (error) {
+        showToast("error", "Error", getErrorMessage(error));
+      } finally {
+        setDeleting(false);
+      }
+    },
+    [getErrorMessage, handleCloseDelete, loadOffers, showToast],
+  );
 
   const handleToggleStatus = useCallback(
     async (offer) => {
@@ -698,7 +693,9 @@ function AdminOffersTab() {
   const filteredOffers = useMemo(() => {
     const query = searchTerm.trim().toLowerCase();
     const normalizedStatus =
-      statusFilter && typeof statusFilter === "object" && "value" in statusFilter
+      statusFilter &&
+      typeof statusFilter === "object" &&
+      "value" in statusFilter
         ? statusFilter.value
         : statusFilter;
 
@@ -828,5 +825,3 @@ function AdminOffersTab() {
 }
 
 export default AdminOffersTab;
-
-

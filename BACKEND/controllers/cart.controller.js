@@ -80,35 +80,23 @@ const calculateCartTax = async (items) => {
     return { items: [], totalTax: 0 };
   }
 
-  // Get unique product IDs with their categories
-  const productIds = [...new Set(items.map((item) => item.product_id))];
-
-  // Fetch categories for products
-  const [products] = await pool.query(
-    `SELECT product_id, category_id FROM product_master WHERE product_id IN (?)`,
-    [productIds],
-  );
-
-  const productCategoryMap = {};
-  products.forEach((p) => {
-    productCategoryMap[p.product_id] = p.category_id;
-  });
+  // Get unique category IDs to find their roots
+  const categoryIds = [...new Set(items.map((item) => item.category_id))];
 
   // Get root categories for tax calculation
   const rootCategoryEntries = await Promise.all(
-    productIds.map(async (productId) => {
-      const categoryId = productCategoryMap[productId];
-      const rootId = await findRootCategory(categoryId);
-      return [productId, rootId];
+    categoryIds.map(async (catId) => {
+      const rootId = await findRootCategory(catId);
+      return [catId, rootId];
     }),
   );
-  const rootCategoryMap = Object.fromEntries(rootCategoryEntries);
+  const categoryRootMap = Object.fromEntries(rootCategoryEntries);
 
   // Calculate tax for each item
   let totalTax = 0;
   const itemsWithTax = items.map((item) => {
-    const categoryId = rootCategoryMap[item.product_id];
-    const taxPercent = getTaxPercent(categoryId);
+    const rootCategoryId = categoryRootMap[item.category_id];
+    const taxPercent = getTaxPercent(rootCategoryId);
     const itemPrice = Number(item.effective_price) * item.quantity;
     const taxAmount = (itemPrice * taxPercent) / 100;
     totalTax += taxAmount;
@@ -175,7 +163,7 @@ function calculateDiscount(offer, subtotal) {
 
  */
 
-async function buildCartResponse(cartId, items, cartOffer = null) {
+export async function buildCartResponse(cartId, items, cartOffer = null) {
   // Calculate tax for items first
   const { items: itemsWithTax, totalTax } = await calculateCartTax(items);
 
@@ -185,89 +173,94 @@ async function buildCartResponse(cartId, items, cartOffer = null) {
 
   let totalItemDiscount = 0;
 
-  const itemsWithDiscount = itemsWithTax.map((item) => {
-    const itemPrice = Number(item.effective_price);
+  let itemsWithDiscount = await Promise.all(
+    itemsWithTax.map(async (item) => {
+      const itemPrice = Number(item.effective_price);
 
-    const lineTotal = itemPrice * item.quantity;
+      const lineTotal = itemPrice * item.quantity;
 
-    subtotal += lineTotal;
+      subtotal += lineTotal;
 
-    let itemDiscount = 0;
+      let itemDiscount = 0;
 
-    let appliedItemOffer = null;
+      let appliedItemOffer = null;
 
-    // Apply item-level offer if available
+      // Apply item-level offer if available
 
-    if (item.item_offer_id && item.item_offer_name) {
-      const itemOffer = {
-        offer_id: item.item_offer_id,
+      if (item.item_offer_id && item.item_offer_name) {
+        const itemOffer = {
+          offer_id: item.item_offer_id,
 
-        offer_name: item.item_offer_name,
+          offer_name: item.item_offer_name,
 
-        offer_type: item.item_offer_type,
+          offer_type: item.item_offer_type,
 
-        discount_type: item.item_discount_type,
+          discount_type: item.item_discount_type,
 
-        discount_value: item.item_discount_value,
+          discount_value: item.item_discount_value,
 
-        maximum_discount_amount: item.item_max_discount,
+          maximum_discount_amount: item.item_max_discount,
+        };
+
+        itemDiscount = calculateDiscount(itemOffer, lineTotal);
+
+        totalItemDiscount += itemDiscount;
+
+        appliedItemOffer = {
+          offer_id: itemOffer.offer_id,
+
+          offer_name: itemOffer.offer_name,
+
+          discount_amount: itemDiscount,
+        };
+      }
+
+      return {
+        cartItemId: item.cart_item_id,
+
+        productId: item.product_id,
+
+        categoryId: item.category_id,
+        categoryIds: await getCategoryAncestors(item.category_id),
+
+        productName: item.display_name,
+
+        image_url: item.image_url || null,
+
+        shortDescription: item.short_description,
+
+        quantity: item.quantity,
+
+        price: itemPrice,
+
+        lineTotal: lineTotal,
+
+        portionPrice: item.portion_price ? Number(item.portion_price) : null,
+
+        portionDiscountedPrice: item.portion_discounted_price
+          ? Number(item.portion_discounted_price)
+          : null,
+
+        portionId: item.portion_id,
+
+        portionValue: item.portion_value,
+
+        combinationId: item.combination_id ?? null,
+
+        combinationName: item.combination_name ?? null,
+
+        modifiers: item.modifiers || [],
+
+        appliedOffer: appliedItemOffer,
+
+        discountedLineTotal: lineTotal - itemDiscount,
+
+        taxPercent: item.tax_percent,
+
+        taxAmount: item.tax_amount,
       };
-
-      itemDiscount = calculateDiscount(itemOffer, lineTotal);
-
-      totalItemDiscount += itemDiscount;
-
-      appliedItemOffer = {
-        offer_id: itemOffer.offer_id,
-
-        offer_name: itemOffer.offer_name,
-
-        discount_amount: itemDiscount,
-      };
-    }
-
-    return {
-      cartItemId: item.cart_item_id,
-
-      productId: item.product_id,
-
-      productName: item.display_name,
-
-      image_url: item.image_url || null,
-
-      shortDescription: item.short_description,
-
-      quantity: item.quantity,
-
-      price: itemPrice,
-
-      lineTotal: lineTotal,
-
-      portionPrice: item.portion_price ? Number(item.portion_price) : null,
-
-      portionDiscountedPrice: item.portion_discounted_price
-        ? Number(item.portion_discounted_price)
-        : null,
-
-      portionId: item.portion_id,
-
-      portionValue: item.portion_value,
-
-      combinationId: item.combination_id ?? null,
-
-      combinationName: item.combination_name ?? null,
-
-      modifiers: item.modifiers || [],
-
-      appliedOffer: appliedItemOffer,
-
-      discountedLineTotal: lineTotal - itemDiscount,
-
-      taxPercent: item.tax_percent,
-
-      taxAmount: item.tax_amount,
-    };
-  });
+    }),
+  );
 
   // Calculate cart-level discount
 
@@ -286,17 +279,65 @@ async function buildCartResponse(cartId, items, cartOffer = null) {
 
       cartOffer = null;
     } else {
-      cartDiscount = calculateDiscount(cartOffer, subtotal);
+      // Calculate effective subtotal for scoped offers (category/product)
+      let applicableSubtotal = subtotal;
+
+      if (
+        cartOffer.offer_type === "category_discount" ||
+        cartOffer.offer_type === "product_discount"
+      ) {
+        applicableSubtotal = 0;
+        itemsWithDiscount = itemsWithDiscount.map((item) => {
+          const isMatch = (cartOffer.mappings || []).some(
+            (m) =>
+              (cartOffer.offer_type === "product_discount" &&
+                item.productId === m.product_id) ||
+              (cartOffer.offer_type === "category_discount" &&
+                (item.categoryId === m.category_id ||
+                  (item.categoryIds &&
+                    item.categoryIds.includes(m.category_id)))),
+          );
+          if (isMatch) {
+            applicableSubtotal += item.lineTotal;
+          }
+          return {
+            ...item,
+            isMatchedByCartOffer: isMatch,
+          };
+        });
+      }
+
+      cartDiscount = calculateDiscount(cartOffer, applicableSubtotal);
 
       appliedCartOffer = {
         offer_id: cartOffer.offer_id,
-
         offer_name: cartOffer.offer_name,
-
         discount_amount: cartDiscount,
       };
+
+      // Distribute cart discount among matched items
+      if (cartDiscount > 0 && applicableSubtotal > 0) {
+        const ratio = cartDiscount / applicableSubtotal;
+        itemsWithDiscount = itemsWithDiscount.map((item) => {
+          if (item.isMatchedByCartOffer) {
+            const share = Math.round(item.lineTotal * ratio * 100) / 100;
+            return {
+              ...item,
+              cartDiscountShare: share,
+            };
+          }
+          return item;
+        });
+      }
     }
   }
+
+  // Add totalLineDiscount to each item for easier order processing
+  itemsWithDiscount = itemsWithDiscount.map((item) => ({
+    ...item,
+    totalLineDiscount:
+      (item.appliedOffer?.discount_amount || 0) + (item.cartDiscountShare || 0),
+  }));
 
   const totalDiscount = totalItemDiscount + cartDiscount;
 
@@ -345,7 +386,20 @@ async function getCart(req, res) {
 
     // Get cart with offer details
     const cartData = await getCartWithOffer(cartId);
-    const cart = cartData[0];
+    if (!cartData.length) {
+      return notFound(res, "Cart not found");
+    }
+
+    // Group mappings if multiple exist for the same offer
+    const cart = {
+      ...cartData[0],
+      mappings: cartData
+        .filter((row) => row.product_id || row.category_id)
+        .map((row) => ({
+          product_id: row.product_id,
+          category_id: row.category_id,
+        })),
+    };
 
     // Get cart items with offer details
     const items = await getCartItemsWithOffer(cartId);
@@ -361,6 +415,7 @@ async function getCart(req, res) {
           maximum_discount_amount: cart.maximum_discount_amount,
           min_purchase_amount: cart.min_purchase_amount,
           usage_limit_per_user: cart.usage_limit_per_user,
+          mappings: cart.mappings,
         }
       : null;
 
@@ -392,12 +447,15 @@ async function getCart(req, res) {
 async function addItemToCart(req, res) {
   try {
     const userId = req.user.id;
-    const { productId, quantity, portionId, combinationId, modifierIds } = req.body;
+    const { productId, quantity, portionId, combinationId, modifierIds } =
+      req.body;
 
     const parsedProductId = parsePositiveInt(productId);
     const parsedQuantity = parsePositiveInt(quantity);
     const parsedPortionId = portionId ? parsePositiveInt(portionId) : null;
-    const parsedCombinationId = combinationId ? parsePositiveInt(combinationId) : null;
+    const parsedCombinationId = combinationId
+      ? parsePositiveInt(combinationId)
+      : null;
 
     if (!parsedProductId || !parsedQuantity) {
       return badRequest(res, "Invalid productId or quantity");
@@ -432,7 +490,8 @@ async function addItemToCart(req, res) {
       if (!comboPricing) {
         return badRequest(res, "Selected combination is unavailable.");
       }
-      itemPrice = Math.round((itemPrice + comboPricing.additionalPrice) * 100) / 100;
+      itemPrice =
+        Math.round((itemPrice + comboPricing.additionalPrice) * 100) / 100;
     }
 
     // Handle Raw Modifiers
@@ -441,9 +500,15 @@ async function addItemToCart(req, res) {
     if (modifierIds && Array.isArray(modifierIds) && modifierIds.length > 0) {
       const modifierDetails = await getMultipleModifierPricing(modifierIds);
       if (modifierDetails.length !== modifierIds.length) {
-        return badRequest(res, "One or more selected modifiers are invalid or inactive.");
+        return badRequest(
+          res,
+          "One or more selected modifiers are invalid or inactive.",
+        );
       }
-      rawModifiersTotal = modifierDetails.reduce((sum, m) => sum + Number(m.additional_price), 0);
+      rawModifiersTotal = modifierDetails.reduce(
+        (sum, m) => sum + Number(m.additional_price),
+        0,
+      );
       modifierKey = modifierIds.sort((a, b) => a - b).join("-");
       itemPrice = Math.round((itemPrice + rawModifiersTotal) * 100) / 100;
     }
@@ -453,7 +518,7 @@ async function addItemToCart(req, res) {
       parsedProductId,
       finalPortionId,
       parsedCombinationId,
-      modifierKey
+      modifierKey,
     );
 
     let cartItemId;
@@ -479,8 +544,28 @@ async function addItemToCart(req, res) {
       }
     }
 
-    const items = await getCartItemsWithProduct(req.cart.cart_id);
-    const response = await buildCartResponse(req.cart.cart_id, items);
+    const items = await getCartItemsWithOffer(req.cart.cart_id);
+
+    // Get current cart-level offer if any to include in the response
+    const cartData = await getCartWithOffer(req.cart.cart_id);
+    const cartOffer =
+      cartData.length > 0 && cartData[0].offer_id
+        ? {
+            ...cartData[0],
+            mappings: cartData
+              .filter((row) => row.product_id || row.category_id)
+              .map((row) => ({
+                product_id: row.product_id,
+                category_id: row.category_id,
+              })),
+          }
+        : null;
+
+    const response = await buildCartResponse(
+      req.cart.cart_id,
+      items,
+      cartOffer,
+    );
     return created(res, "Item added to cart", response);
   } catch (err) {
     console.error("Error in addItemToCart:", err);
@@ -531,7 +616,26 @@ async function updateCartItem(req, res) {
 
     const updatedItems = await getCartItemsWithOffer(req.cart.cart_id);
 
-    const response = await buildCartResponse(req.cart.cart_id, updatedItems);
+    // Get current cart-level offer if any to include in the response
+    const cartData = await getCartWithOffer(req.cart.cart_id);
+    const cartOffer =
+      cartData.length > 0 && cartData[0].offer_id
+        ? {
+            ...cartData[0],
+            mappings: cartData
+              .filter((row) => row.product_id || row.category_id)
+              .map((row) => ({
+                product_id: row.product_id,
+                category_id: row.category_id,
+              })),
+          }
+        : null;
+
+    const response = await buildCartResponse(
+      req.cart.cart_id,
+      updatedItems,
+      cartOffer,
+    );
 
     return ok(res, "Cart item updated", response);
   } catch (err) {
@@ -567,7 +671,26 @@ async function removeCartItem(req, res) {
 
     const updatedItems = await getCartItemsWithOffer(req.cart.cart_id);
 
-    const response = await buildCartResponse(req.cart.cart_id, updatedItems);
+    // Get current cart-level offer if any to include in the response
+    const cartData = await getCartWithOffer(req.cart.cart_id);
+    const cartOffer =
+      cartData.length > 0 && cartData[0].offer_id
+        ? {
+            ...cartData[0],
+            mappings: cartData
+              .filter((row) => row.product_id || row.category_id)
+              .map((row) => ({
+                product_id: row.product_id,
+                category_id: row.category_id,
+              })),
+          }
+        : null;
+
+    const response = await buildCartResponse(
+      req.cart.cart_id,
+      updatedItems,
+      cartOffer,
+    );
 
     return ok(res, "Cart item removed", response);
   } catch (err) {
@@ -620,27 +743,23 @@ async function applyCartOffer(req, res) {
 
     // Get offer details to validate
     const [offerDetails] = await pool.query(
-      `SELECT * FROM offer_master WHERE offer_id = ? AND is_active = 1 AND is_deleted = 0`,
+      `SELECT * FROM offer_master 
+       WHERE offer_id = ? 
+       AND is_active = 1 
+       AND is_deleted = 0
+       AND CURDATE() BETWEEN start_date AND end_date`,
       [parsedOfferId],
     );
 
     if (!offerDetails.length) {
-      return badRequest(res, "Offer not found or not active");
+      return badRequest(res, "Offer not found, not active, or expired today");
     }
 
     const offer = offerDetails[0];
 
-    // Check if offer is within valid date/time range
-    const now = new Date();
-    const startDate = new Date(offer.start_date);
-    const endDate = new Date(offer.end_date);
-
-    if (now < startDate || now > endDate) {
-      return badRequest(res, "Offer is not currently valid");
-    }
-
     // Check time-based offer
     if (offer.start_time && offer.end_time) {
+      const now = new Date();
       const currentTime = now.toTimeString().slice(0, 5);
       if (currentTime < offer.start_time || currentTime > offer.end_time) {
         return badRequest(res, "Offer is not valid at this time");
@@ -669,7 +788,7 @@ async function applyCartOffer(req, res) {
       offer.offer_type === "product_discount"
     ) {
       // Get applicable offers for cart
-      const applicableOffers = await getApplicableCartOffers(cartId);
+      const applicableOffers = await getApplicableCartOffers();
       const isApplicable = applicableOffers.some(
         (o) => o.offer_id === parsedOfferId,
       );
@@ -687,7 +806,15 @@ async function applyCartOffer(req, res) {
 
     const updatedCartData = await getCartWithOffer(cartId);
 
-    const updatedCart = updatedCartData[0];
+    const updatedCart = {
+      ...updatedCartData[0],
+      mappings: updatedCartData
+        .filter((row) => row.product_id || row.category_id)
+        .map((row) => ({
+          product_id: row.product_id,
+          category_id: row.category_id,
+        })),
+    };
 
     const updatedItems = await getCartItemsWithOffer(cartId);
 
@@ -708,6 +835,7 @@ async function applyCartOffer(req, res) {
           min_purchase_amount: updatedCart.min_purchase_amount,
 
           usage_limit_per_user: updatedCart.usage_limit_per_user,
+          mappings: updatedCart.mappings,
         }
       : null;
 
@@ -875,6 +1003,25 @@ async function removeCartItemOffer(req, res) {
   }
 }
 
+// Get all ancestor category IDs for a category
+const getCategoryAncestors = async (categoryId) => {
+  if (!categoryId) return [];
+  const [rows] = await pool.query(
+    `WITH RECURSIVE cat_tree AS (
+        SELECT category_id, parent_id
+        FROM category_master
+        WHERE category_id = ?
+        UNION ALL
+        SELECT c.category_id, c.parent_id
+        FROM category_master c
+        JOIN cat_tree ct ON c.category_id = ct.parent_id
+    )
+    SELECT category_id FROM cat_tree`,
+    [categoryId],
+  );
+  return rows.map((r) => r.category_id);
+};
+
 /**
 
  * Get applicable offers for current cart
@@ -892,36 +1039,95 @@ async function getApplicableOffers(req, res) {
     // Get cart items to find products
 
     const items = await getCartItemsWithOffer(cartId);
+    console.log(`[DEBUG] Found ${items.length} items in cart ${cartId}`);
 
-    // Get unique product IDs
-
-    const productIds = [...new Set(items.map((item) => item.product_id))];
-
-    // Get applicable offers for each product
-
-    const productOffers = await Promise.all(
-      productIds.map((productId) => getApplicableOffersForProduct(productId)),
+    // Get all applicable category IDs for each item (including ancestors)
+    const itemsWithAncestors = await Promise.all(
+      items.map(async (item) => {
+        const ancestors = await getCategoryAncestors(item.category_id);
+        console.log(
+          `[DEBUG] Item ${item.product_id} category ${item.category_id} ancestors:`,
+          ancestors,
+        );
+        return {
+          ...item,
+          categoryIds: ancestors,
+        };
+      }),
     );
 
-    // Add type field to product offers for frontend identification
-    const allProductOffers = productOffers.flat().map((offer) => ({
-      ...offer,
-      type: "product",
-    }));
-
     // Get applicable cart-level offers
-
     const cartOffersRaw = await getApplicableCartOffers();
-    // Add type field to cart offers for frontend identification
-    const cartOffers = cartOffersRaw.map((offer) => ({
-      ...offer,
-      type: "cart",
-    }));
+    console.log(
+      `[DEBUG] getApplicableCartOffers returned ${cartOffersRaw.length} raw offers`,
+    );
+
+    // Group items by offer_id to handle multiple mappings and deduplicate
+    const groupedOffers = cartOffersRaw.reduce((acc, current) => {
+      const id = current.offer_id;
+      if (!acc[id]) {
+        acc[id] = { ...current, mappings: [] };
+      }
+      if (current.product_id || current.category_id) {
+        acc[id].mappings.push({
+          product_id: current.product_id,
+          category_id: current.category_id,
+        });
+      }
+      return acc;
+    }, {});
+
+    const filteredCartOffers = Object.values(groupedOffers).filter((offer) => {
+      if (
+        offer.offer_type === "flat_discount" ||
+        offer.offer_type === "first_order" ||
+        offer.offer_type === "time_based"
+      ) {
+        return true;
+      }
+      // For category/product, check if any item in cart matches any of the mappings
+      return itemsWithAncestors.some((item) =>
+        offer.mappings.some(
+          (m) =>
+            (offer.offer_type === "product_discount" &&
+              item.product_id === m.product_id) ||
+            (offer.offer_type === "category_discount" &&
+              item.categoryIds.includes(m.category_id)),
+        ),
+      );
+    });
+
+    const cartOffers = filteredCartOffers
+      .filter(
+        (o) =>
+          o.offer_type === "flat_discount" ||
+          o.offer_type === "first_order" ||
+          o.offer_type === "time_based" ||
+          o.offer_type === "category_discount",
+      )
+      .map((offer) => ({
+        ...offer,
+        type: "cart",
+      }));
+
+    const productOffers = filteredCartOffers
+      .filter((o) => o.offer_type === "product_discount")
+      .map((offer) => {
+        // For productOffers, the frontend expects a single product_id/category_id in the root
+        // to display "on [Product Name]". We'll pick the first mapping.
+        const firstMapping = offer.mappings.find((m) => m.product_id) || {};
+        return {
+          ...offer,
+          type: "product",
+          product_id: firstMapping.product_id,
+          category_id: firstMapping.category_id,
+        };
+      });
 
     return ok(res, "Applicable offers fetched successfully", {
       cartOffers,
 
-      productOffers: allProductOffers,
+      productOffers,
     });
   } catch (err) {
     console.error("Error in getApplicableOffers:", err);
